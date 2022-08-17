@@ -1,0 +1,49 @@
+{mapping, "changhong.redis.server", "emqx_changhong.server", [
+  {default, {"127.0.0.1", 6379}},
+  {datatype, [integer, ip, string]}
+]}.
+
+{mapping, "changhong.redis.sentinel", "emqx_changhong.server", [
+  {default, ""},
+  {datatype, string},
+  hidden
+]}.
+
+{mapping, "changhong.redis.pool", "emqx_changhong.server", [
+  {default, 8},
+  {datatype, integer}
+]}.
+
+{mapping, "changhong.redis.database", "emqx_changhong.server", [
+  {default, 0},
+  {datatype, integer}
+]}.
+
+{mapping, "changhong.redis.password", "emqx_changhong.server", [
+  {default, ""},
+  {datatype, string},
+  hidden
+]}.
+
+{translation, "emqx_changhong.server", fun(Conf) ->
+  {RHost, RPort} =
+  case cuttlefish:conf_get("changhong.redis.server", Conf) of
+    {Ip, Port} -> {Ip, Port};
+    S          -> case string:tokens(S, ":") of
+                    [Domain]       -> {Domain, 6379};
+                    [Domain, Port] -> {Domain, list_to_integer(Port)}
+                  end
+    end,
+  Pool = cuttlefish:conf_get("changhong.redis.pool", Conf),
+  Passwd = cuttlefish:conf_get("changhong.redis.password", Conf),
+  DB = cuttlefish:conf_get("changhong.redis.database", Conf),
+  Sentinel = cuttlefish:conf_get("changhong.redis.sentinel", Conf),
+  [{pool_size, Pool},
+   {auto_reconnect, 1},
+   {host, RHost},
+   {port, RPort},
+   {database, DB},
+   {password, Passwd},
+   {sentinel, Sentinel}]
+end}.
+

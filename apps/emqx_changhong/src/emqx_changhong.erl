@@ -1,0 +1,369 @@
+%%
+%% Copyright (c) 2013-2017 EMQ Enterprise, Inc. All Rights Reserved.
+%%
+%% @doc EMQ X CHANGHONG
+%%
+
+-module(emqx_changhong).
+
+-behaviour(ecpool_worker).
+
+-include("emqx_changhong.hrl").
+
+-include_lib("emqx/include/emqx.hrl").
+-include_lib("emqx/include/logger.hrl").
+
+-export([ connect/1
+        , q/1
+        ]).
+
+-export([ load/0
+        , unload/0
+        ]).
+
+%% Hook Callbacks1
+-export([ on_client_connected/2
+        ,  on_client_disconnected/3
+        ,  on_message_publish/1
+        ]).
+
+-define(C(K, L), proplists:get_value(K, L)).
+
+-define(ONLINE, 1).
+-define(OFFLINE, 0).
+-define(DEVICE, <<"d">>).
+-define(M_APP, <<"a">>).
+
+%%--------------------------------------------------------------------
+%% Load The Plugin
+%%--------------------------------------------------------------------
+% load() ->
+%     Env = [],
+%     emqx:hook('client.connected', fun ?MODULE:on_client_connected/4, [Env]),
+%     emqx:hook('client.disconnected', fun ?MODULE:on_client_disconnected/3, [Env]),
+%     emqx:hook('message.publish', fun ?MODULE:on_message_publish/2, [Env]),
+%     io:format("~s is loaded.~n", [?APP]), ok.
+
+load() ->
+    do_hook('client.connected', fun ?MODULE:on_client_connected/2),
+    do_hook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
+    do_hook('message.publish', fun ?MODULE:on_message_publish/1),
+    ?LOG(info, "[Changhong] hooks loaded"),
+    io:format("~s is loaded.~n", [?APP]), ok.
+
+do_hook(Point, Callback) ->
+    case emqx:hook(Point, Callback) of
+        ok ->
+            ?LOG(info, "[Changhong] hooks loaded"),
+            ok;
+        {error, already_exists} ->
+            ?LOG(info, "[Changhong] hooks already loaded"),
+            ok
+        % {error, Reason} ->
+        %     ?LOG(error, "[Changhong] add hook failed: ~p", [Point]),
+        %     error(Reason)
+    end.
+
+
+%%-------------------------------------------------------------------
+%% Unload the Plugin
+%%--------------------------------------------------------------------
+unload() ->
+    emqx:unhook('client.connected', fun ?MODULE:on_client_connected/2),
+    emqx:unhook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
+    emqx:unhook('message.publish', fun ?MODULE:on_message_publish/1),
+    ?LOG(info, "[Changhong] hooks unloaded"),
+    io:format("~s is unloaded.~n", [?APP]), ok.
+
+%%--------------------------------------------------------------------
+%% Client Connected
+%%--------------------------------------------------------------------
+on_client_connected(#{client_id := <<"d:", Sn/binary>> = ClientId}, _ConnInfo) ->
+    Topic = binary:replace(<<"d/${sn}/i">>, <<"${sn}">>, Sn),
+    TopicTables = [emqx_topic:parse(Topic, #{qos => 1})],
+    self() ! {subscribe, TopicTables},
+    Value = [<<"state">>, ?ONLINE, <<"online_at">>, erlang:system_time(second), <<"offline_at">>, undefined],
+    Cmd1 = [<<"HMSET">>, table_name(<<"device">>, Sn) | Value],
+    Cmd2 = [<<"HSET">>, table_name(<<"node:mqtt">>, a2b(node())), Sn, erlang:system_time(second)],
+    qp([Cmd1, Cmd2]),
+    publish_state(ClientId, Sn, ?ONLINE);
+on_client_connected(#{client_id := <<"a:", Uid/binary>>}, _ConnInfo) ->
+    I = binary:replace(<<"a/${uid}/i">>, <<"${uid}">>, Uid),
+    S = binary:replace(<<"a/${uid}/s">>, <<"${uid}">>, Uid),
+    TopicTables = [
+        emqx_topic:parse(I, #{qos => 1}),
+        emqx_topic:parse(S, #{qos => 1})
+    ],
+    self() ! {subscribe, TopicTables};
+on_client_connected(_clientInfo, _ConnInfo) ->
+    ok.
+
+%%--------------------------------------------------------------------
+%% Client DisConnected
+%%--------------------------------------------------------------------
+on_client_disconnected(_Client, auth_failure, _Env) ->
+    ok;
+on_client_disconnected(#{client_id := ClientId = <<"d:", Sn/binary>>}, _Reason, _) ->
+    Value = [<<"state">>, ?OFFLINE, <<"offline_at">>, erlang:system_time(second)],
+    Cmd1 = [<<"HMSET">>, table_name(<<"device">>, Sn) | Value],
+    Cmd2 = [<<"HDEL">>, table_name(<<"node:mqtt">>, a2b(node())), Sn],
+    qp([Cmd1, Cmd2]),
+    _ = publish_state(ClientId, Sn, ?OFFLINE),
+    ok;
+on_client_disconnected(_Client, _Reason, _Env) ->
+    ok.
+
+%%--------------------------------------------------------------------
+%% Publish Message
+%%--------------------------------------------------------------------
+on_message_publish(Msg = #message{topic = Topic}) ->
+    Filters = [{<<"d/+/s">>, mstate},
+               {<<"d/+/m">>, dmsg},
+               {<<"x/+/m">>, dmsg},
+               {<<"x/+/s">>, xstate},
+               {<<"d/+/i">>, msg},
+               {<<"d/+/a">>, dalarm},
+               {<<"x/+/a">>, dalarm},
+			   {<<"router/#">>, router}
+            ],
+    case filter(Filters, Topic) of
+        false -> {ok, Msg};
+        Type ->
+            case on_message(Msg, Type) of
+                ok -> {ok, Msg};
+                {ok, Msg1} -> {ok, Msg1}
+            end
+    end.
+
+filter([], _Topic) ->
+    false;
+filter([{Filter, Type} | Filters], Topic) ->
+    case emqx_topic:match(Topic, Filter) of
+        true -> Type;
+        false -> filter(Filters, Topic)
+    end.
+
+
+%% mqtt设备发布状态消息
+on_message(#message{topic = Topic, from = From, payload = Payload}, mstate) ->
+    %% send mqtt device state to app/cloud
+    [_, Sn, _] = binary:split(Topic, <<"/">>, [global]),
+	_ = publish_state_to_iot(From, Payload),
+    Cmd = [<<"HGETALL">>, table_name(<<"bind:device">>, Sn)],
+    case q(Cmd) of
+        {ok, []} -> ok;
+        {ok, Hash} ->
+            lists:foreach(
+                fun({Id, Type}) ->
+                    case Type of
+                        <<"app">>   -> publish_state_to_app(From, Id, Payload);
+                        <<"cloud">> -> publish_state_to_cloud(From, Id, Sn, Payload)
+                    end
+                end, parse_bind(Hash));
+        {error, Reason} -> logger:error("error: ~p", [Reason])
+    end, ok;
+
+%% 设备发布消息
+on_message(#message{topic = Topic, from = From, payload = Payload}, dmsg) ->
+    %% send mqtt device message to app/cloud
+    [_, Sn, _] = binary:split(Topic, <<"/">>, [global]),
+	_ = publish_msg_to_iot(From, Topic, Payload),
+    Cmd = [<<"HGETALL">>, table_name(<<"bind:device">>, Sn)],
+    case q(Cmd) of
+        {ok, []} -> ok;
+        {ok, Hash} ->
+            lists:foreach(
+                fun({Id, Type}) ->
+                    case Type of
+                        <<"app">>   -> publish_msg_to_app(From, Id, Sn, Payload);
+                        <<"cloud">> -> publish_msg_to_cloud(From, Id, Sn, Payload)
+                    end
+                end, parse_bind(Hash));
+        {error, Reason} -> logger:error("error: ~p", [Reason])
+    end, ok;
+
+%% 与设备影子交互
+on_message(#message{topic = Topic, from = From, payload = Payload}, router) ->
+    %% send mqtt device message to app/cloud
+	publish_msg_to_iot(From, Topic, Payload);
+
+%% xmpp设备发布状态消息
+on_message(#message{topic = Topic, from = From, payload = Payload}, xstate) ->
+    %% store xmpp device state to redis in xmpp:device
+    [_, Sn, _] = binary:split(Topic, <<"/">>, [global]),
+    _ = case Payload of
+        <<"1">> ->
+            q([<<"ZADD">>, <<"xmpp:device">>, 1, Sn]),
+            publish_state(From, Sn, ?ONLINE);
+        <<"0">> ->
+            q([<<"ZREM">>, <<"xmpp:device">>, Sn]),
+            publish_state(From, Sn, ?OFFLINE)
+    end,
+    ok;
+
+%% 发布消息到mqtt/xmpp设备上
+on_message(#message{topic = Topic, from = From, payload = Payload} = Msg, msg) ->
+
+    % 1.判断emq消息 d/${sn}/i的 发送者，如果发送者的clientid(格式为a:${cid})不在redis hash列表中，则该条消息不成功。
+    % 说明
+    % a.redis hash的key为 device:bind:${sn}
+    % b.hash中判断的key为cid
+    [_, Sn, _] = binary:split(Topic, <<"/">>, [global]),
+    ClientId = format_from(From),
+    case check_clientid(ClientId, Sn) of
+        true ->
+            %% app/cloud send message to mqtt/xmpp device
+            _ =
+                case q([<<"ZRANK">>, <<"xmpp:device">>, Sn]) of
+                    {ok, undefined} -> ok;
+                    {ok, _} ->
+                        publish_msg_to_xmpp(From, Topic, Payload)
+                end,
+            ok;
+        false ->
+            {ok, Msg#message{headers = #{allow_publish => false}}}
+    end;
+
+%% mqtt设备发布告警消息
+on_message(#message{topic = Topic, from = From, payload = Payload}, dalarm) ->
+    [_, Sn, _] = binary:split(Topic, <<"/">>, [global]),
+    Cmd = [<<"HGETALL">>, table_name(<<"bind:device">>, Sn)],
+    case q(Cmd) of
+        {ok, []} -> ok;
+        {ok, Hash} ->
+            lists:foreach(fun({Id, Type}) ->
+                case Type of
+                    <<"app">> ->
+                        publish_msg_to_app(From, Id, Sn, Payload);
+                    <<"cloud">> ->
+                        publish_msg_to_cloud(From, Id, Sn, Payload)
+                end
+            end, parse_bind(Hash));
+        {error, Reason} -> logger:error("error: ~p", [Reason])
+    end,
+    ok.
+
+% on_message(_Msg, _Type) ->
+    %% app/cloud send message to mqtt/xmpp device
+    % ok.
+
+
+table_name(Name, Val) ->
+    Split = <<":">>,
+    <<Name/binary, Split/binary, Val/binary>>.
+
+
+publish_state(From, Sn, State) ->
+    Topic = binary:replace(<<"d/${sn}/s">>, <<"${sn}">>, Sn),
+    %Json = [{sn, Sn}, {s, State}],
+    %Payload = iolist_to_binary(mochijson2:encode(Json)),
+    Len = size(Sn),
+    Payload = <<Len:8, Sn/binary, State:8>>,
+    Msg = emqx_message:make(From, 1, Topic, Payload),
+    emqx:publish(Msg).
+
+publish_state_to_app(From, Uid, Payload) ->
+    Topic = binary:replace(<<"a/${uid}/s">>, <<"${uid}">>, Uid),
+    Msg = emqx_message:make(From, 1, Topic, Payload),
+    logger:debug("publish_state_to_app:~p~n", [Msg]),
+    emqx:publish(Msg).
+
+publish_state_to_iot(From, Payload) ->
+    Topic = <<"iot/state">>,
+    Msg = emqx_message:make(From, 1, Topic, Payload),
+    logger:debug("publish_state_to_iot:~p~n", [Msg]),
+    emqx:publish(Msg).
+
+publish_state_to_cloud(From, Cloud, Sn, Payload) ->
+    Topic = binary:replace(binary:replace(<<"cloud/${cloud}/d/${sn}/s">>, <<"${cloud}">>, Cloud), <<"${sn}">>, Sn),
+    Msg = emqx_message:make(From, 1, Topic, Payload),
+    logger:debug("publish_state_to_cloud:~p~n", [Msg]),
+    emqx:publish(Msg).
+
+publish_msg_to_app(From, Uid, Sn, Payload) ->
+    Topic = binary:replace(<<"a/${uid}/i">>, <<"${uid}">>, Uid),
+    %Json = [{sn, Sn}, {payload, Payload}],
+    %NewPayload = iolist_to_binary(mochijson2:encode(Json)),
+    Len = size(Sn),
+    NewPayload = <<Len:8, Sn/binary, Payload/binary>>,
+    Msg = emqx_message:make(From, 1, Topic, NewPayload),
+    logger:debug("publish_msg_to_app:~p~n", [Msg]),
+    emqx:publish(Msg).
+
+publish_msg_to_iot(From, Stopic, Payload) ->
+    Topic = <<"iot/msg">>,
+    Len = size(Stopic),
+    NewPayload = <<Len:8, Stopic/binary, Payload/binary>>,
+    Msg = emqx_message:make(From, 1, Topic, NewPayload),
+    logger:debug("publish_msg_to_iot:~p~n", [Msg]),
+    emqx:publish(Msg).
+
+publish_msg_to_cloud(From, Cloud, Sn, Payload) ->
+    Topic = binary:replace(binary:replace(<<"cloud/${cloud}/d/${sn}/m">>, <<"${cloud}">>, Cloud), <<"${sn}">>, Sn),
+    %Json = [{sn, Sn}, {payload, Payload}],
+    %NewPayload = iolist_to_binary(mochijson2:encode(Json)),
+    Len = size(Sn),
+    NewPayload = <<Len:8, Sn/binary, Payload/binary>>,
+    Msg = emqx_message:make(From, 1, Topic, NewPayload),
+    logger:debug("publish_msg_to_cloud:~p~n", [Msg]),
+    emqx:publish(Msg).
+
+publish_msg_to_xmpp(From, Topic, Payload) ->
+    Head = <<"xmpp/">>,
+    Msg = emqx_message:make(From, 1, <<Head/binary, Topic/binary>>, Payload),
+    logger:debug("publish_msg_to_xmpp:~p~n", [Msg]),
+    emqx:publish(Msg).
+
+parse_bind(Hash) -> parse_bind(Hash, []).
+
+parse_bind([], Acc) -> Acc;
+parse_bind([Id, Type | Hash], Acc) -> parse_bind(Hash, [{Id, Type} | Acc]).
+
+%%--------------------------------------------------------------------
+%% Redis Connect/Query
+%%--------------------------------------------------------------------
+
+connect(Opts) ->
+    Sentinel = ?C(sentinel, Opts),
+    Host = case Sentinel =:= "" of
+        true  ->
+            ?C(host, Opts);
+        false ->
+            _ = eredis_sentinel:start_link([{?C(host, Opts), ?C(port, Opts)}]),
+            "sentinel:"++ Sentinel
+    end,
+    eredis:start_link(Host,
+                      ?C(port, Opts),
+                      ?C(database, Opts),
+                      ?C(password, Opts),
+                      no_reconnect).
+
+%% Redis Query.
+q(Cmd) ->
+    %% logger:debug("q-cmd:~p", [Cmd]),
+    ecpool:with_client(?APP, fun(C) -> eredis:q(C, Cmd) end).
+
+qp(PipeLine) ->
+    %% logger:debug("qp-cmd:~p", [PipeLine]),
+    ecpool:with_client(?APP, fun(C) -> eredis:qp(C, PipeLine) end).
+
+a2b(A) -> erlang:atom_to_binary(A, utf8).
+
+% 1.判断emq消息 d/${sn}/i的 发送者，如果发送者的clientid(格式为a:${cid})不在redis hash列表中，则该条消息不成功。
+% 说明
+% a.redis hash的key为 device:bind:${sn}
+% b.hash中判断的key为cid
+check_clientid(<<"a:", Cid/binary>>, Sn) ->
+    case q([<<"HGET">>, table_name(<<"bind:device">>, Sn), Cid]) of
+        {ok, undefined} -> false;
+        {ok, _} -> true
+    end;
+
+check_clientid(_ClientId, _Sn) ->
+    %% 是否存非<<"a:xxx">> clientid的发布消息的情况？
+    true.
+
+format_from(From) when is_binary(From) orelse is_atom(From) ->
+    From;
+format_from(From) ->
+    From.
