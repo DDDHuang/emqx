@@ -15,13 +15,14 @@
 -define(DEVICE, <<"d">>).
 -define(M_APP, <<"a">>).
 
-all() -> 
-    [
-    {group, state},
-     {group, publish}
-    ].
+all() ->
+    [].
+    % [
+    % {group, state},
+    %  {group, publish}
+    % ].
 
-groups() -> 
+groups() ->
     [
         {state, [sequence], [connect, disconnect]},
         {publish, [sequence], [pub_state,
@@ -51,7 +52,7 @@ end_per_testcase(_, Config) ->
     Config.
 
 clean_data() ->
-    emqx_changhong:q(["FLUSHDB"]).    
+    emqx_changhong:q(["FLUSHDB"]).
 
 connect(_Config) ->
     {ok, Receive} = emqx_client:start_link([{host, "localhost"}, {client_id, <<"revc">>}]),
@@ -65,7 +66,7 @@ connect(_Config) ->
     ?assertEqual(proplists:get_value(<<"state">>, State), <<"1">>),
 
     timer:sleep(50),
-    
+
     DPid = ets:lookup_element(emqx_session, <<"d:1001">>, 2),
     ?assertEqual(length(emqx_broker:subscriptions(DPid)), 1),
 
@@ -75,10 +76,10 @@ connect(_Config) ->
     APid = ets:lookup_element(emqx_session, <<"a:2001">>, 2),
     ?assertEqual(length(emqx_broker:subscriptions(APid)), 2),
 
-    receive 
-        {publish, #{topic := Topic}} -> 
+    receive
+        {publish, #{topic := Topic}} ->
             ?assertEqual(<<"d/1001/s">>, Topic)
-    after 1000 -> 
+    after 1000 ->
             ?assert(false, <<"not receive">>)
     end,
     emqx_client:disconnect(Receive),
@@ -99,10 +100,10 @@ disconnect(_Config) ->
     State = parse(State0),
     ?assertEqual(proplists:get_value(<<"state">>, State), <<"0">>),
 
-    receive 
-        {publish, #{topic := Topic}} -> 
+    receive
+        {publish, #{topic := Topic}} ->
             ?assertEqual(<<"d/1001/s">>, Topic)
-    after 1000 -> 
+    after 1000 ->
             ?assert(false, <<"not receive">>)
     end,
     emqx_client:disconnect(Receive).
@@ -116,7 +117,7 @@ pub_state(_Config) ->
     emqx_client:subscribe(Receive, <<"iot/state">>, 1),
     emqx_client:subscribe(Receive, <<"a/+/s">>, 1),
     emqx_client:subscribe(Receive, <<"cloud/+/d/+/s">>, 1),
-    
+
     {ok, Dev} = emqx_client:start_link([{host, "localhost"}, {client_id, <<"d:1001">>}]),
     {ok, _} = emqx_client:connect(Dev),
 
@@ -133,7 +134,7 @@ pub_device_msg(_Config) ->
     {ok, _} = emqx_client:connect(Receive),
     emqx_client:subscribe(Receive, <<"a/+/i">>, 1),
     emqx_client:subscribe(Receive, <<"cloud/+/d/+/m">>, 1),
-    
+
     {ok, Dev} = emqx_client:start_link([{host, "localhost"}, {client_id, <<"d:1001">>}]),
     {ok, _} = emqx_client:connect(Dev),
     emqx_client:publish(Dev, <<"d/1001/m">>, <<"a">>),
@@ -151,7 +152,7 @@ pub_xmpp_device_msg(_Config) ->
     {ok, _} = emqx_client:connect(Receive),
     emqx_client:subscribe(Receive, <<"a/+/i">>, 1),
     emqx_client:subscribe(Receive, <<"cloud/+/d/+/m">>, 1),
-    
+
     {ok, Dev} = emqx_client:start_link([{host, "localhost"}, {client_id, <<"d:1001">>}]),
     {ok, _} = emqx_client:connect(Dev),
     emqx_client:publish(Dev, <<"x/1001/m">>, <<"a">>),
@@ -240,7 +241,7 @@ pub_router(_Config) ->
 
     ?assertEqual(1, length(flush())),
     emqx_client:disconnect(Receive).
-    
+
 
 parse(Hash) -> parse(Hash, []).
 parse([], Acc) -> Acc;
@@ -258,7 +259,7 @@ flush(Msgs) ->
 % queue_auto_sub(Config) ->
 %     Connection = ?config(connection, Config),
 %     [eredis:q(Connection, ["HSET", Key, Filed, Value]) || {Key, Filed, Value} <- ?Queue],
-    
+
 %     %%step 1 publish messages
 %     {ok, Publisher} = emqx_client:start_link([{host, "localhost"}, {client_id, <<"pub">>}]),
 %     {ok, _} = emqx_client:connect(Publisher),
@@ -270,11 +271,11 @@ flush(Msgs) ->
 %     {ok, _} = emqx_client:connect(Subscriber),
 %     timer:sleep(100),
 %     emqx_client:subscribe(Subscriber, <<"queue/topic">>, 1),
-%     receive 
-%         {publish, _Topic, A} -> 
+%     receive
+%         {publish, _Topic, A} ->
 %             ?assertEqual(<<"a">>, A)
-%     after 1000 -> 
-%             false 
+%     after 1000 ->
+%             false
 %     end,
 %     emqx_client:disconnect(Publisher),
 %     emqx_client:disconnect(Subscriber),
@@ -290,17 +291,17 @@ flush(Msgs) ->
 %     {ok, Subscriber} = emqx_client:start_link([{host, "localhost"}, {client_id, <<"squeue">>}]),
 %     {ok, _} = emqx_client:connect(Subscriber),
 %     emqx_client:subscribe(Subscriber, <<"queue/topic">>, 1),
-    
+
 %     {ok, Publisher} = emqx_client:start_link([{host, "localhost"}, {client_id, <<"pub">>}]),
 %     {ok,  _} = emqx_client:connect(Publisher),
 %     timer:sleep(100),
 %     emqx_client:publish(Publisher, <<"queue/topic">>, <<"a">>, [{qos, 1}, {retain, false}]),
 %     timer:sleep(100),
-%     receive 
-%         {publish, _, A} -> 
+%     receive
+%         {publish, _, A} ->
 %             ?assertEqual(<<"a">>, A)
-%     after 1000 -> 
-%         false 
+%     after 1000 ->
+%         false
 %     end,
 %     emqx_client:disconnect(Subscriber),
 %     timer:sleep(1000),
@@ -311,15 +312,15 @@ flush(Msgs) ->
 
 %     emqx_client:subscribe(Subscriber1, <<"queue/topic">>, qos1),
 %     timer:sleep(1000),
-%     receive 
-%         {publish, _, B} -> 
+%     receive
+%         {publish, _, B} ->
 %             ?assertEqual(<<"b">>, B)
-%     after 1000 -> 
-%             false 
+%     after 1000 ->
+%             false
 %     end,
 %     timer:sleep(1000),
 %     emqx_client:disconnect(Subscriber1),
-%     emqx_client:disconnect(Publisher),    
+%     emqx_client:disconnect(Publisher),
 %     timer:sleep(10),
 %     {ok, Msgids} = eredis:q(Connection, ["ZRANGE", <<"mqtt:msg:queue/topic">>, 0, -1]),
 %     ?assertEqual(length(Msgids), 0),

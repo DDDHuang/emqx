@@ -23,8 +23,8 @@
 
 %% Hook Callbacks1
 -export([ on_client_connected/2
-        ,  on_client_disconnected/3
-        ,  on_message_publish/1
+        , on_client_disconnected/3
+        , on_message_publish/1
         ]).
 
 -define(C(K, L), proplists:get_value(K, L)).
@@ -325,6 +325,7 @@ parse_bind([Id, Type | Hash], Acc) -> parse_bind(Hash, [{Id, Type} | Acc]).
 
 connect(Opts) ->
     Sentinel = ?C(sentinel, Opts),
+    io:format("start changhong ~p ~n", [Sentinel]),
     Host = case Sentinel =:= "" of
         true  ->
             ?C(host, Opts);
