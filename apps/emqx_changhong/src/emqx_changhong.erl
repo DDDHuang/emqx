@@ -341,12 +341,17 @@ connect(Opts) ->
 
 %% Redis Query.
 q(Cmd) ->
+    ?LOG(debug, "[changhong] redis command: ~0p", [Cmd]),
     %% logger:debug("q-cmd:~p", [Cmd]),
-    ecpool:with_client(?APP, fun(C) -> eredis:q(C, Cmd) end).
+    Res = ecpool:with_client(?APP, fun(C) -> eredis:q(C, Cmd) end),
+    ?LOG(info, "[changhong] redis command: ~0p  result: ~0p", [Cmd, Res]),
+    Res.
 
 qp(PipeLine) ->
-    %% logger:debug("qp-cmd:~p", [PipeLine]),
-    ecpool:with_client(?APP, fun(C) -> eredis:qp(C, PipeLine) end).
+    ?LOG(debug, "[changhong] redis query: ~0p", [PipeLine]),
+    Res = ecpool:with_client(?APP, fun(C) -> eredis:qp(C, PipeLine) end),
+    ?LOG(info, "[changhong] redis query: ~0p  result: ~0p", [PipeLine, Res]),
+    Res.
 
 a2b(A) -> erlang:atom_to_binary(A, utf8).
 
