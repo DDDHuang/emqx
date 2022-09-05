@@ -22,7 +22,8 @@
         ]).
 
 %% Hook Callbacks1
--export([ on_client_connected/2
+-export([ on_client_auth/2
+        , on_client_connected/2
         , on_client_disconnected/3
         , on_message_publish/1
         ]).
@@ -45,6 +46,7 @@
 %     io:format("~s is loaded.~n", [?APP]), ok.
 
 load() ->
+    do_hook('client.authenticate', fun ?MODULE:on_client_auth/2),
     do_hook('client.connected', fun ?MODULE:on_client_connected/2),
     do_hook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
     do_hook('message.publish', fun ?MODULE:on_message_publish/1),
@@ -69,11 +71,42 @@ do_hook(Point, Callback) ->
 %% Unload the Plugin
 %%--------------------------------------------------------------------
 unload() ->
+    emqx:unhook('client.authenticate', fun ?MODULE:on_client_auth/2),
     emqx:unhook('client.connected', fun ?MODULE:on_client_connected/2),
     emqx:unhook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
     emqx:unhook('message.publish', fun ?MODULE:on_message_publish/1),
     ?LOG(info, "[Changhong] hooks unloaded"),
     io:format("~s is unloaded.~n", [?APP]), ok.
+
+%%--------------------------------------------------------------------
+%% Auth
+%%--------------------------------------------------------------------
+
+on_client_auth(#{clientid := <<"s:", Cid/binary>>, password := Password}, AuthResult) ->
+    ?LOG(info, "[Changhong] on_client_auth: s:~0p", [Cid]),
+    Cmd = [<<"HGETALL">>, table_name(<<"security:">>, Cid)],
+    case q(Cmd) of
+        {ok, Password} ->
+            ?LOG(info, "[Changhong] on_client_auth: s:~0p success", [Cid]),
+            {stop, AuthResult#{anonymous => false, auth_result => success}};
+        Error ->
+            ?LOG(error, "[Changhong] on_client_auth error, s:~0p, ~0p", [Cid, Error]),
+            {stop, AuthResult#{auth_result => not_authorized, anonymous => false}}
+    end;
+on_client_auth(#{clientid := <<"z:", Cid/binary>>, password := Password}, AuthResult) ->
+    ?LOG(info, "[Changhong] on_client_auth: z:~0p", [Cid]),
+    Cmd = [<<"HGETALL">>, <<"cloud:security">>],
+    case q(Cmd) of
+        {ok, [Password]} ->
+            ?LOG(info, "[Changhong] on_client_auth: z:~0p success", [Cid]),
+            {stop, AuthResult#{anonymous => false, auth_result => success}};
+        Error ->
+            ?LOG(error, "[Changhong] on_client_auth error, z:~0p, ~0p", [Cid, Error]),
+            {stop, AuthResult#{auth_result => not_authorized, anonymous => false}}
+    end;
+on_client_auth(#{clientid := ID}, _AuthResult) ->
+    ?LOG(debug, "[Changhong] on_client_auth unknow ~0p", [ID]),
+    ok.
 
 %%--------------------------------------------------------------------
 %% Client Connected
@@ -88,15 +121,25 @@ on_client_connected(#{clientid := <<"d:", Sn/binary>> = ClientId}, _ConnInfo) ->
     qp([Cmd1, Cmd2]),
     publish_state(ClientId, Sn, ?ONLINE);
 on_client_connected(#{clientid := <<"a:", Uid/binary>>}, _ConnInfo) ->
+    ?LOG(info, "[Changhong] auto subscribe: a:~0p", [Uid]),
+    auto_subscribe(Uid);
+on_client_connected(#{clientid := <<"s:", Uid/binary>>}, _ConnInfo) ->
+    ?LOG(info, "[Changhong] auto subscribe: s:~0p", [Uid]),
+    auto_subscribe(Uid);
+on_client_connected(_ClientInfo, _ConnInfo) ->
+    ok.
+
+%%--------------------------------------------------------------------
+%% Client auto subscribe
+%%--------------------------------------------------------------------
+auto_subscribe(Uid) ->
     I = binary:replace(<<"a/${uid}/i">>, <<"${uid}">>, Uid),
     S = binary:replace(<<"a/${uid}/s">>, <<"${uid}">>, Uid),
     TopicTables = [
         emqx_topic:parse(I, #{qos => 1}),
         emqx_topic:parse(S, #{qos => 1})
     ],
-    self() ! {subscribe, TopicTables};
-on_client_connected(_ClientInfo, _ConnInfo) ->
-    ok.
+    self() ! {subscribe, TopicTables}.
 
 %%--------------------------------------------------------------------
 %% Client DisConnected
@@ -210,7 +253,7 @@ on_message(#message{topic = Topic, from = From, payload = Payload} = Msg, msg) -
     % b.hash中判断的key为cid
     [_, Sn, _] = binary:split(Topic, <<"/">>, [global]),
     ClientId = format_from(From),
-    case check_clientid(ClientId, Sn) of
+    case check_d_msg_clientid(ClientId, Sn) of
         true ->
             %% app/cloud send message to mqtt/xmpp device
             _ =
@@ -355,19 +398,28 @@ qp(PipeLine) ->
 
 a2b(A) -> erlang:atom_to_binary(A, utf8).
 
-% 1.判断emq消息 d/${sn}/i的 发送者，如果发送者的clientid(格式为a:${cid})不在redis hash列表中，则该条消息不成功。
-% 说明
+% 1.发送topic为d/${sn}/i的发送者，除了以z:开头的，其它都需要判断发送者的clientid是否在redis hash列表中，若不在，则不允许发送
 % a.redis hash的key为 device:bind:${sn}
 % b.hash中判断的key为cid
-check_clientid(<<"a:", Cid/binary>>, Sn) ->
-    case q([<<"HGET">>, table_name(<<"bind:device">>, Sn), Cid]) of
-        {ok, undefined} -> false;
-        {ok, _} -> true
-    end;
-
-check_clientid(_ClientId, _Sn) ->
-    %% 是否存非<<"a:xxx">> clientid的发布消息的情况？
-    true.
+check_d_msg_clientid(Cid = <<"z:", _/binary>>, _Sn) ->
+    ?LOG(debug, "[changhong] check d msg clientid:~p success", [Cid]),
+    true;
+check_d_msg_clientid(Cid, Sn) ->
+    ?LOG(debug, "[changhong] check d msg clientid:~p ", [Cid]),
+    case binary:split(Cid, <<":">>) of
+        [_, Cid1] ->
+            case q([<<"HGET">>, table_name(<<"bind:device">>, Sn), Cid1]) of
+                {ok, undefined} ->
+                    ?LOG(debug, "[changhong] check d msg clientid:~p failed, not found", [Cid]),
+                    false;
+                {ok, _} ->
+                    ?LOG(debug, "[changhong] check d msg clientid:~p success", [Cid]),
+                    true
+            end;
+        _ ->
+            ?LOG(debug, "[changhong] check d msg clientid:~p failed, bad client id", [Cid]),
+            false
+    end.
 
 format_from(From) when is_binary(From) orelse is_atom(From) ->
     From;
