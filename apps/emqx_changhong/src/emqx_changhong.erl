@@ -84,11 +84,20 @@ unload() ->
 
 on_client_auth(#{clientid := <<"s:", Cid/binary>>, password := Password}, AuthResult) ->
     ?LOG(info, "[Changhong] on_client_auth: s:~0p", [Cid]),
-    Cmd = [<<"GET">>, table_name(<<"security:">>, Cid)],
+    Cmd = [<<"GET">>, table_name(<<"security">>, Cid)],
     case q(Cmd) of
-        {ok, [Password]} ->
-            ?LOG(info, "[Changhong] on_client_auth: s:~0p success", [Cid]),
-            {stop, AuthResult#{anonymous => false, auth_result => success}};
+        {ok, PWDFromRedis} ->
+            case check_password(Password, PWDFromRedis) of
+                true ->
+                    ?LOG(info, "[Changhong] on_client_auth: z:~0p success", [Cid]),
+                    {stop, AuthResult#{auth_result => success, anonymous => false}};
+                false ->
+                    ?LOG(error, "[Changhong] on_client_auth error, s:~0p, bad pwd", [Cid]),
+                    {stop, AuthResult#{auth_result => not_authorized, anonymous => false}};
+                {error, Reason} ->
+                    ?LOG(error, "[Changhong] on_client_auth error, s:~0p, ~0p ", [Cid, Reason]),
+                    {stop, AuthResult#{auth_result => not_authorized, anonymous => false}}
+            end;
         Error ->
             ?LOG(error, "[Changhong] on_client_auth error, s:~0p, ~0p", [Cid, Error]),
             {stop, AuthResult#{auth_result => not_authorized, anonymous => false}}
@@ -97,9 +106,18 @@ on_client_auth(#{clientid := <<"z:", Cid/binary>>, password := Password}, AuthRe
     ?LOG(info, "[Changhong] on_client_auth: z:~0p", [Cid]),
     Cmd = [<<"GET">>, <<"cloud:security">>],
     case q(Cmd) of
-        {ok, [Password]} ->
-            ?LOG(info, "[Changhong] on_client_auth: z:~0p success", [Cid]),
-            {stop, AuthResult#{anonymous => false, auth_result => success}};
+        {ok, PWDFromRedis} ->
+            case check_password(Password, PWDFromRedis) of
+                true ->
+                    ?LOG(info, "[Changhong] on_client_auth: z:~0p success", [Cid]),
+                    {stop, AuthResult#{anonymous => false, auth_result => success}};
+                false ->
+                    ?LOG(error, "[Changhong] on_client_auth error, z:~0p, bad pwd", [Cid]),
+                    {stop, AuthResult#{auth_result => not_authorized, anonymous => false}};
+                {error, Reason} ->
+                    ?LOG(error, "[Changhong] on_client_auth error, z:~0p, ~0p ", [Cid, Reason]),
+                    {stop, AuthResult#{auth_result => not_authorized, anonymous => false}}
+            end;
         Error ->
             ?LOG(error, "[Changhong] on_client_auth error, z:~0p, ~0p", [Cid, Error]),
             {stop, AuthResult#{auth_result => not_authorized, anonymous => false}}
@@ -107,6 +125,15 @@ on_client_auth(#{clientid := <<"z:", Cid/binary>>, password := Password}, AuthRe
 on_client_auth(#{clientid := ID}, _AuthResult) ->
     ?LOG(debug, "[Changhong] on_client_auth unknow ~0p", [ID]),
     ok.
+
+%% support redis response with  <<"some_pwd">> or [<<"some_pwd">>]
+%% anyway, we need to get the pwd string
+check_password(PWD, [PWDFromRedis]) when is_binary(PWDFromRedis)->
+    check_password(PWD, PWDFromRedis);
+check_password(PWD, PWDFromRedis) when is_binary(PWDFromRedis) ->
+    PWDFromRedis == PWD;
+check_password(_PWD, _PWDFromRedis) ->
+    {error, unknow_pwd}.
 
 %%--------------------------------------------------------------------
 %% Client Connected
