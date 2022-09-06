@@ -84,9 +84,9 @@ unload() ->
 
 on_client_auth(#{clientid := <<"s:", Cid/binary>>, password := Password}, AuthResult) ->
     ?LOG(info, "[Changhong] on_client_auth: s:~0p", [Cid]),
-    Cmd = [<<"HGETALL">>, table_name(<<"security:">>, Cid)],
+    Cmd = [<<"GET">>, table_name(<<"security:">>, Cid)],
     case q(Cmd) of
-        {ok, Password} ->
+        {ok, [Password]} ->
             ?LOG(info, "[Changhong] on_client_auth: s:~0p success", [Cid]),
             {stop, AuthResult#{anonymous => false, auth_result => success}};
         Error ->
@@ -95,7 +95,7 @@ on_client_auth(#{clientid := <<"s:", Cid/binary>>, password := Password}, AuthRe
     end;
 on_client_auth(#{clientid := <<"z:", Cid/binary>>, password := Password}, AuthResult) ->
     ?LOG(info, "[Changhong] on_client_auth: z:~0p", [Cid]),
-    Cmd = [<<"HGETALL">>, <<"cloud:security">>],
+    Cmd = [<<"GET">>, <<"cloud:security">>],
     case q(Cmd) of
         {ok, [Password]} ->
             ?LOG(info, "[Changhong] on_client_auth: z:~0p success", [Cid]),
