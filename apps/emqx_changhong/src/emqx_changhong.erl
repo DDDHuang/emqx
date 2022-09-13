@@ -126,12 +126,19 @@ on_client_auth(#{clientid := ID}, _AuthResult) ->
     ?LOG(debug, "[Changhong] on_client_auth unknow ~0p", [ID]),
     ok.
 
-%% support redis response with  <<"some_pwd">> or [<<"some_pwd">>]
+%% support redis response with  <<"\"some_pwd\"">> or [<<"\"some_pwd\"">>]
 %% anyway, we need to get the pwd string
 check_password(PWD, [PWDFromRedis]) when is_binary(PWDFromRedis)->
     check_password(PWD, PWDFromRedis);
 check_password(PWD, PWDFromRedis) when is_binary(PWDFromRedis) ->
-    PWDFromRedis == PWD;
+    try
+        PWD == emqx_json:decode(PWDFromRedis)
+    catch _E:_R ->
+        case PWD == PWDFromRedis of
+            true -> true;
+            false -> {error, bad_pwd}
+        end
+    end;
 check_password(_PWD, _PWDFromRedis) ->
     {error, unknow_pwd}.
 
