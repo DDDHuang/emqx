@@ -971,8 +971,18 @@ handle_call(kick, Channel = #channel{
             shutdown(kicked, ok, Channel1)
     end;
 
-handle_call(discard, Channel) ->
-    disconnect_and_shutdown(discarded, ok, Channel);
+handle_call(discard, Channel = #channel{clientinfo = ClientInfo}) ->
+    case maps:get(clientid, ClientInfo, <<"">>)  of
+        <<"d:", _/binary>> ->
+            disconnect_and_shutdown(discarded, ok, Channel);
+        _ ->
+            Topic = <<"$SYS/kickout">>,
+            Payload = <<"The client has been kicked out">>,
+            Message = emqx_message:make(broker, 0, Topic, Payload),
+            self() ! {deliver, Topic, Message},
+            _ = erlang:send_after(5000, self(), {discard, now}),
+            {reply, ok, Channel}
+    end;
 
 %% Session Takeover
 handle_call({takeover, 'begin'}, Channel = #channel{session = Session}) ->
@@ -1018,7 +1028,9 @@ handle_call(Req, Channel) ->
 -spec(handle_info(Info :: term(), channel())
       -> ok | {ok, channel()} | {shutdown, Reason :: term(), channel()}).
 
-handle_info({subscribe, TopicFilters}, Channel ) ->
+handle_info({discard, now}, Channel) ->
+    disconnect_and_shutdown(discarded, Channel);
+handle_info({subscribe, TopicFilters}, Channel) ->
     {_, NChannel} = lists:foldl(
         fun({TopicFilter, SubOpts}, {_, ChannelAcc}) ->
             do_subscribe(TopicFilter, SubOpts, ChannelAcc)
@@ -1786,6 +1798,12 @@ disconnect_and_shutdown(Reason, Reply, Channel = ?IS_MQTT_V5
 
 disconnect_and_shutdown(Reason, Reply, Channel) ->
     shutdown(Reason, Reply, Channel).
+
+disconnect_and_shutdown(Reason, Channel = ?IS_MQTT_V5 = #channel{conn_state = connected}) ->
+    shutdown(Reason, ?DISCONNECT_PACKET(reason_code(Reason)), Channel);
+
+disconnect_and_shutdown(Reason, Channel) ->
+    shutdown(Reason, Channel).
 
 sp(true)  -> 1;
 sp(false) -> 0.
