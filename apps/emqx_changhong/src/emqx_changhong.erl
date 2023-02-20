@@ -332,18 +332,28 @@ table_name(Name, Val) ->
 
 publish_state(From, Sn, State) ->
     Topic = binary:replace(<<"d/${sn}/s">>, <<"${sn}">>, Sn),
-    %Json = [{sn, Sn}, {s, State}],
-    %Payload = iolist_to_binary(mochijson2:encode(Json)),
-    Len = size(Sn),
-    Payload = <<Len:8, Sn/binary, State:8>>,
-    Msg = emqx_message:make(From, 1, Topic, Payload),
-    emqx:publish(Msg).
+    case legality_topic(Topic) of
+        false ->
+            ?LOG(error, "[changhong] ~p topic ~p is illegal", [?FUNCTION_NAME, Topic]);
+        true ->
+            %Json = [{sn, Sn}, {s, State}],
+            %Payload = iolist_to_binary(mochijson2:encode(Json)),
+            Len = size(Sn),
+            Payload = <<Len:8, Sn/binary, State:8>>,
+            Msg = emqx_message:make(From, 1, Topic, Payload),
+            emqx:publish(Msg)
+    end.
 
 publish_state_to_app(From, Uid, Payload) ->
     Topic = binary:replace(<<"a/${uid}/s">>, <<"${uid}">>, Uid),
-    Msg = emqx_message:make(From, 1, Topic, Payload),
-    logger:debug("publish_state_to_app:~p~n", [Msg]),
-    emqx:publish(Msg).
+    case legality_topic(Topic) of
+        false ->
+            ?LOG(error, "[changhong] ~p topic ~p is illegal", [?FUNCTION_NAME, Topic]);
+        true ->
+            Msg = emqx_message:make(From, 1, Topic, Payload),
+            logger:debug("publish_state_to_app:~p~n", [Msg]),
+            emqx:publish(Msg)
+    end.
 
 publish_state_to_iot(From, Payload) ->
     Topic = <<"iot/state">>,
@@ -353,19 +363,29 @@ publish_state_to_iot(From, Payload) ->
 
 publish_state_to_cloud(From, Cloud, Sn, Payload) ->
     Topic = binary:replace(binary:replace(<<"cloud/${cloud}/d/${sn}/s">>, <<"${cloud}">>, Cloud), <<"${sn}">>, Sn),
-    Msg = emqx_message:make(From, 1, Topic, Payload),
-    logger:debug("publish_state_to_cloud:~p~n", [Msg]),
-    emqx:publish(Msg).
+    case legality_topic(Topic) of
+        false ->
+            ?LOG(error, "[changhong] ~p topic ~p is illegal", [?FUNCTION_NAME, Topic]);
+        true ->
+            Msg = emqx_message:make(From, 1, Topic, Payload),
+            logger:debug("publish_state_to_cloud:~p~n", [Msg]),
+            emqx:publish(Msg)
+    end.
 
 publish_msg_to_app(From, Uid, Sn, Payload) ->
     Topic = binary:replace(<<"a/${uid}/i">>, <<"${uid}">>, Uid),
-    %Json = [{sn, Sn}, {payload, Payload}],
-    %NewPayload = iolist_to_binary(mochijson2:encode(Json)),
-    Len = size(Sn),
-    NewPayload = <<Len:8, Sn/binary, Payload/binary>>,
-    Msg = emqx_message:make(From, 1, Topic, NewPayload),
-    logger:debug("publish_msg_to_app:~p~n", [Msg]),
-    emqx:publish(Msg).
+    case legality_topic(Topic) of
+        false ->
+            ?LOG(error, "[changhong] ~p topic ~p is illegal", [?FUNCTION_NAME, Topic]);
+        true ->
+            %Json = [{sn, Sn}, {payload, Payload}],
+            %NewPayload = iolist_to_binary(mochijson2:encode(Json)),
+            Len = size(Sn),
+            NewPayload = <<Len:8, Sn/binary, Payload/binary>>,
+            Msg = emqx_message:make(From, 1, Topic, NewPayload),
+            logger:debug("publish_msg_to_app:~p~n", [Msg]),
+            emqx:publish(Msg)
+    end.
 
 publish_msg_to_iot(From, Stopic, Payload) ->
     Topic = <<"iot/msg">>,
@@ -377,19 +397,34 @@ publish_msg_to_iot(From, Stopic, Payload) ->
 
 publish_msg_to_cloud(From, Cloud, Sn, Payload) ->
     Topic = binary:replace(binary:replace(<<"cloud/${cloud}/d/${sn}/m">>, <<"${cloud}">>, Cloud), <<"${sn}">>, Sn),
-    %Json = [{sn, Sn}, {payload, Payload}],
-    %NewPayload = iolist_to_binary(mochijson2:encode(Json)),
-    Len = size(Sn),
-    NewPayload = <<Len:8, Sn/binary, Payload/binary>>,
-    Msg = emqx_message:make(From, 1, Topic, NewPayload),
-    logger:debug("publish_msg_to_cloud:~p~n", [Msg]),
-    emqx:publish(Msg).
+    case legality_topic(Topic) of
+        false ->
+            ?LOG(error, "[changhong] ~p topic ~p is illegal", [?FUNCTION_NAME, Topic]);
+        true ->
+            %Json = [{sn, Sn}, {payload, Payload}],
+            %NewPayload = iolist_to_binary(mochijson2:encode(Json)),
+            Len = size(Sn),
+            NewPayload = <<Len:8, Sn/binary, Payload/binary>>,
+            Msg = emqx_message:make(From, 1, Topic, NewPayload),
+            logger:debug("publish_msg_to_cloud:~p~n", [Msg]),
+            emqx:publish(Msg)
+    end.
 
 publish_msg_to_xmpp(From, Topic, Payload) ->
     Head = <<"xmpp/">>,
     Msg = emqx_message:make(From, 1, <<Head/binary, Topic/binary>>, Payload),
     logger:debug("publish_msg_to_xmpp:~p~n", [Msg]),
     emqx:publish(Msg).
+
+legality_topic(Topic) ->
+    case unicode:characters_to_binary(Topic) of
+        {error, _} ->
+            false;
+        {incomplete, _, _} ->
+            false;
+        _ ->
+            true
+    end.
 
 parse_bind(Hash) -> parse_bind(Hash, []).
 
