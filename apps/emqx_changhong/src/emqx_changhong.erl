@@ -147,13 +147,18 @@ check_password(_PWD, _PWDFromRedis) ->
 %%--------------------------------------------------------------------
 on_client_connected(#{clientid := <<"d:", Sn/binary>> = ClientId}, _ConnInfo) ->
     Topic = binary:replace(<<"d/${sn}/i">>, <<"${sn}">>, Sn),
-    TopicTables = [emqx_topic:parse(Topic, #{qos => 1})],
-    self() ! {subscribe, TopicTables},
-    Value = [<<"state">>, ?ONLINE, <<"online_at">>, erlang:system_time(second), <<"offline_at">>, undefined],
-    Cmd1 = [<<"HMSET">>, table_name(<<"device">>, Sn) | Value],
-    Cmd2 = [<<"HSET">>, table_name(<<"node:mqtt">>, a2b(node())), Sn, erlang:system_time(second)],
-    qp([Cmd1, Cmd2]),
-    publish_state(ClientId, Sn, ?ONLINE);
+    case legality_topic(Topic) of
+        false ->
+            ?LOG(error, "[changhong] bad sn ~p , ~p is illegal", [?FUNCTION_NAME, ClientId]);
+        true ->
+            TopicTables = [emqx_topic:parse(Topic, #{qos => 1})],
+            self() ! {subscribe, TopicTables},
+            Value = [<<"state">>, ?ONLINE, <<"online_at">>, erlang:system_time(second), <<"offline_at">>, undefined],
+            Cmd1 = [<<"HMSET">>, table_name(<<"device">>, Sn) | Value],
+            Cmd2 = [<<"HSET">>, table_name(<<"node:mqtt">>, a2b(node())), Sn, erlang:system_time(second)],
+            qp([Cmd1, Cmd2]),
+            publish_state(ClientId, Sn, ?ONLINE)
+    end;
 on_client_connected(#{clientid := <<"a:", Uid/binary>>}, _ConnInfo) ->
     ?LOG(info, "[Changhong] auto subscribe: a:~0p", [Uid]),
     auto_subscribe(Uid);
