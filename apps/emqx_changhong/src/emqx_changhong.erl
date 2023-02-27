@@ -145,11 +145,14 @@ check_password(_PWD, _PWDFromRedis) ->
 %%--------------------------------------------------------------------
 %% Client Connected
 %%--------------------------------------------------------------------
-on_client_connected(#{clientid := <<"d:", Sn/binary>> = ClientId}, _ConnInfo) ->
+on_client_connected(ClientInfo = #{clientid := <<"d:", Sn/binary>> = ClientId}, _ConnInfo) ->
     Topic = binary:replace(<<"d/${sn}/i">>, <<"${sn}">>, Sn),
     case legality_topic(Topic) of
         false ->
-            ?LOG(error, "[changhong] bad sn ~p , ~p is illegal", [?FUNCTION_NAME, ClientId]);
+            Host = maps:get(peerhost, ClientInfo, undefined),
+            Username = maps:get(username, ClientInfo, undefined),
+            ?LOG(error, "[changhong] bad sn ~p , ~p is illegal, host ~0p, username ~0p",
+                [?FUNCTION_NAME, ClientId, Host, Username]);
         true ->
             TopicTables = [emqx_topic:parse(Topic, #{qos => 1})],
             self() ! {subscribe, TopicTables},
@@ -159,14 +162,28 @@ on_client_connected(#{clientid := <<"d:", Sn/binary>> = ClientId}, _ConnInfo) ->
             qp([Cmd1, Cmd2]),
             publish_state(ClientId, Sn, ?ONLINE)
     end;
-on_client_connected(#{clientid := <<"a:", Uid/binary>>}, _ConnInfo) ->
+on_client_connected(ClientInfo = #{clientid := <<"a:", Uid/binary>>}, _ConnInfo) ->
+    _ = maybe_log_clientid_error(ClientInfo),
     ?LOG(info, "[Changhong] auto subscribe: a:~0p", [Uid]),
     auto_subscribe(Uid);
-on_client_connected(#{clientid := <<"s:", Uid/binary>>}, _ConnInfo) ->
+on_client_connected(ClientInfo = #{clientid := <<"s:", Uid/binary>>}, _ConnInfo) ->
+    _ = maybe_log_clientid_error(ClientInfo),
     ?LOG(info, "[Changhong] auto subscribe: s:~0p", [Uid]),
     auto_subscribe(Uid);
-on_client_connected(_ClientInfo, _ConnInfo) ->
+on_client_connected(ClientInfo, _ConnInfo) ->
+    _ = maybe_log_clientid_error(ClientInfo),
     ok.
+
+maybe_log_clientid_error(ClientInfo = #{clientid := ClientId}) ->
+    case legality_topic(ClientId) of
+        false ->
+            Host = maps:get(peerhost, ClientInfo, undefined),
+            Username = maps:get(username, ClientInfo, undefined),
+            ?LOG(error, "[changhong] bad sn ~p , ~p is illegal, host ~0p, username ~0p",
+                [?FUNCTION_NAME, ClientId, Host, Username]);
+        true ->
+            ok
+    end.
 
 %%--------------------------------------------------------------------
 %% Client auto subscribe
