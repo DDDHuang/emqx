@@ -221,7 +221,6 @@ on_client_disconnected(_Client, _Reason, _Env) ->
 on_check_acl(ClientInfo = #{clientid := ClientId}, publish, Topic, _AclResult) ->
     case legality_topic(ClientId) andalso legality_topic(Topic) of
         true ->
-            io:format("ClientInfo: ~p~n", [ClientInfo]),
             ok;
         false ->
             Host = maps:get(peerhost, ClientInfo, undefined),

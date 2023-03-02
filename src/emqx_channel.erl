@@ -361,6 +361,9 @@ handle_in(?PACKET(_), Channel = #channel{conn_state = ConnState}) when ConnState
 handle_in(Packet = ?PUBLISH_PACKET(_QoS), Channel) ->
     case emqx_packet:check(Packet) of
         ok -> process_publish(Packet, Channel);
+        {error, ?RC_TOPIC_NAME_INVALID} ->
+            % FIXME: bad topic or sn will be deny by ACL;
+            process_publish(Packet, Channel);
         {error, ReasonCode} ->
             handle_out(disconnect, ReasonCode, Channel)
     end;
@@ -462,6 +465,19 @@ handle_in(Packet = ?SUBSCRIBE_PACKET(PacketId, Properties, TopicFilters),
                                      || {_TopicFilter, ReasonCode} <- TupleTopicFilters2],
                     handle_out(suback, {PacketId, ReasonCodes2}, NChannel)
             end;
+        {error, ?RC_TOPIC_FILTER_INVALID} ->
+            % FIXME: bad topic or sn subed bad topic will not take effect
+            RCFun =
+                fun
+                    ({_, #{qos := NowQoS}}) when NowQoS == 0 orelse NowQoS == 1 orelse NowQoS == 2 ->
+                        NowQoS;
+                    (_) ->
+                        1
+                end,
+            ReasonCodes = [RCFun(TopicFilter) || TopicFilter <- TopicFilters],
+            ?LOG(warning, "[changhong] bad sn sub ed ~p failed channel info ~p",
+                [TopicFilters, Channel]),
+            handle_out(suback, {PacketId, ReasonCodes}, Channel);
         {error, ReasonCode} ->
             handle_out(disconnect, ReasonCode, Channel)
     end;
