@@ -24,6 +24,7 @@
 %% Hook Callbacks1
 -export([ on_client_auth/2
         , on_client_connected/2
+        , on_check_acl/4
         , on_client_disconnected/3
         , on_message_publish/1
         ]).
@@ -49,6 +50,7 @@ load() ->
     do_hook('client.authenticate', fun ?MODULE:on_client_auth/2),
     do_hook('client.connected', fun ?MODULE:on_client_connected/2),
     do_hook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
+    do_hook('client.check_acl', fun ?MODULE:on_check_acl/4),
     do_hook('message.publish', fun ?MODULE:on_message_publish/1),
     ?LOG(info, "[Changhong] hooks loaded"),
     io:format("~s is loaded.~n", [?APP]), ok.
@@ -74,6 +76,7 @@ unload() ->
     emqx:unhook('client.authenticate', fun ?MODULE:on_client_auth/2),
     emqx:unhook('client.connected', fun ?MODULE:on_client_connected/2),
     emqx:unhook('client.disconnected', fun ?MODULE:on_client_disconnected/3),
+    emqx:unhook('client.check_acl', fun ?MODULE:on_check_acl/4),
     emqx:unhook('message.publish', fun ?MODULE:on_message_publish/1),
     ?LOG(info, "[Changhong] hooks unloaded"),
     io:format("~s is unloaded.~n", [?APP]), ok.
@@ -126,8 +129,8 @@ on_client_auth(#{clientid := ID}, _AuthResult) ->
     ?LOG(debug, "[Changhong] on_client_auth unknow ~0p", [ID]),
     ok.
 
-%% support redis response with  <<"\"some_pwd\"">> or [<<"\"some_pwd\"">>]
-%% anyway, we need to get the pwd string
+% support redis response with  <<"\"some_pwd\"">> or [<<"\"some_pwd\"">>]
+% anyway, we need to get the pwd string
 check_password(PWD, [PWDFromRedis]) when is_binary(PWDFromRedis)->
     check_password(PWD, PWDFromRedis);
 check_password(PWD, PWDFromRedis) when is_binary(PWDFromRedis) ->
@@ -210,6 +213,25 @@ on_client_disconnected(#{clientid := ClientId = <<"d:", Sn/binary>>}, _Reason, _
     _ = publish_state(ClientId, Sn, ?OFFLINE),
     ok;
 on_client_disconnected(_Client, _Reason, _Env) ->
+    ok.
+
+%%--------------------------------------------------------------------
+%% Check ACL. Bad sn will be denied
+%%--------------------------------------------------------------------
+on_check_acl(ClientInfo = #{clientid := ClientId}, publish, Topic, _AclResult) ->
+    case legality_topic(ClientId) andalso legality_topic(Topic) of
+        true ->
+            io:format("ClientInfo: ~p~n", [ClientInfo]),
+            ok;
+        false ->
+            Host = maps:get(peerhost, ClientInfo, undefined),
+            Username = maps:get(username, ClientInfo, undefined),
+            ?LOG(warning,
+                "[changhong] bad sn try pub ~0p , client id  ~p is illegal, host ~0p, username ~0p",
+                [Topic, ClientId, Host, Username]),
+            {stop, deny}
+    end;
+on_check_acl(_ClientInfo, _Sub, _Topic, _AclResult) ->
     ok.
 
 %%--------------------------------------------------------------------
@@ -440,12 +462,10 @@ publish_msg_to_xmpp(From, Topic, Payload) ->
 
 legality_topic(Topic) ->
     case unicode:characters_to_binary(Topic) of
-        {error, _} ->
-            false;
-        {incomplete, _, _} ->
-            false;
+        Data when is_binary(Data) ->
+            true;
         _ ->
-            true
+            false
     end.
 
 parse_bind(Hash) -> parse_bind(Hash, []).

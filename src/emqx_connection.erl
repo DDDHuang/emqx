@@ -716,7 +716,7 @@ handle_outgoing(Packet, State) ->
 
 serialize_and_inc_stats_fun(#state{serialize = Serialize}) ->
     fun(Packet) ->
-        try emqx_frame:serialize_pkt(Packet, Serialize) of
+        case emqx_frame:serialize_pkt(Packet, Serialize) of
             <<>> -> ?LOG(warning, "~s is discarded due to the frame is too large!",
                          [emqx_packet:format(Packet)]),
                     ok = emqx_metrics:inc('delivery.dropped.too_large'),
@@ -726,9 +726,6 @@ serialize_and_inc_stats_fun(#state{serialize = Serialize}) ->
             Data -> ?LOG(debug, "SEND ~s", [emqx_packet:format(Packet)]),
                     ok = inc_outgoing_stats(Packet),
                     Data
-        catch E:R ->
-            ?LOG(error, "serialize message failed ~p ~0p ~0p", [E, R, Packet]),
-            <<>>
         end
     end.
 
